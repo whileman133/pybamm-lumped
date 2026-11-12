@@ -395,7 +395,7 @@ wheels = [
 
 [[package]]
 name = "pybamm-lumped"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "casadi" },
@@ -403,6 +403,7 @@ dependencies = [
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "pybamm" },
+    { name = "pybammsolvers" },
     { name = "scipy" },
 ]
 
@@ -413,11 +414,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "casadi", specifier = ">=3.6" },
+    { name = "casadi", specifier = "~=3.7.2" },
     { name = "matplotlib", specifier = ">=3.10" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pybamm", specifier = "~=25.1.1" },
+    { name = "pybammsolvers", specifier = ">=0.8.2" },
     { name = "scipy", specifier = ">=1.15" },
 ]
 
