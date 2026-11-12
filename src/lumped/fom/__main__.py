@@ -8,7 +8,8 @@ python -m lumped.fom --model cell.json --input sim.json --out out.mat
 
 model    exportLumpedModel.m output.
 input    simData as JSON: time [s], Iapp [A] (discharge > 0), T [degC], SOC0 [%].
-options  {"mesh": 1-5, "tolerances": "tight"|"medium"|"loose", "maxStep": s,
+options  {"mesh": 1-5, "elements": {"neg": n, "sep": n, "pos": n, "particle": n},
+          "tolerances": "tight"|"medium"|"loose", "maxStep": s,
           "thermal": bool, "limits": {"Vmax": V, "phiseMin": V, ..., "SOCLimit": 0-1}}.
 out      MATLAB file with FOMout (simFOM's fields) in variable 'out'; on an
          error, 'error' holds the message and 'report' the traceback.
@@ -31,7 +32,7 @@ from .spec import load_spec
 def run_options(d: dict, progress=None) -> RunOptions:
     """RunOptions from the options JSON."""
     model = Options(thermal=bool(d.get("thermal", False)), limits=Limits.from_dict(d.get("limits")),
-                    mesh=int(d.get("mesh", 1)))
+                    mesh=int(d.get("mesh", 1)), elements=dict(d.get("elements") or {}))
     return RunOptions(tolerances=d.get("tolerances", "tight"), max_step=float(d.get("maxStep", 0) or 0),
                       progress=progress, model=model)
 

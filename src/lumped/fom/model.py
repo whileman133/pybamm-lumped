@@ -18,8 +18,11 @@ import pybamm
 
 from .spec import CellSpec, Param, SpecError
 
-# Mesh presets: elements per region and per particle (coarsening 1-5).
-MESH = {"region": [20, 15, 10, 8, 5], "radial": [50, 30, 20, 15, 10]}
+# Mesh presets: elements per region and per particle radius (coarsening 1-5).
+# - Particles get many elements: a diffusivity that varies steeply with
+#   stoichiometry makes the surface stoichiometry step between elements, and
+#   only a fine radial mesh keeps the current from rippling along x.
+MESH = {"region": [20, 15, 10, 8, 5], "radial": [400, 200, 100, 50, 30]}
 BIG = 1e6        # moves an inactive event or mode term out of the way
 
 
@@ -50,12 +53,30 @@ class Limits:
         return [(n, s) for n, s in out if getattr(self, n) is not None]
 
 
+ELEMENT_KEYS = ("neg", "sep", "pos", "particle")
+
+
 @dataclass
 class Options:
-    """Model options: thermal model, charge limits, mesh coarsening (1-5)."""
+    """
+    Model options: thermal model, charge limits, mesh.
+
+    mesh is a coarsening preset (1-5); elements overrides its counts per
+    region ('neg', 'sep', 'pos') and per particle ('particle').
+    """
     thermal: bool = False
     limits: Limits = field(default_factory=Limits)
     mesh: int = 1
+    elements: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        bad = set(self.elements) - set(ELEMENT_KEYS)
+        if bad:
+            raise ValueError(f"Unknown mesh regions: {', '.join(sorted(bad))}; use {', '.join(ELEMENT_KEYS)}.")
+        for k, n in self.elements.items():
+            if int(n) != n or not 2 <= n <= 1000:
+                raise ValueError(f"The {k} mesh needs a whole number of elements from 2 to 1000; got {n}.")
+        self.elements = {k: int(n) for k, n in self.elements.items()}
 
 
 def _nice_pow(x, y):
@@ -150,8 +171,9 @@ class FOMModel(pybamm.BaseModel):
     @property
     def default_var_pts(self):
         k = min(max(int(self.options.mesh), 1), 5) - 1
-        pts = {self.x[r]: MESH["region"][k] for r in self.regions}
-        pts.update({r: MESH["radial"][k] for r in self.r.values()})
+        n = self.options.elements
+        pts = {self.x[r]: n.get(r, MESH["region"][k]) for r in self.regions}
+        pts.update({r: n.get("particle", MESH["radial"][k]) for r in self.r.values()})
         return pts
 
     @property

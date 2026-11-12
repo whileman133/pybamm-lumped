@@ -13,7 +13,7 @@ from scipy.io import loadmat
 from lumped.fom import SpecError, load_spec
 from lumped.fom.__main__ import main
 from lumped.fom.expr import ExpressionError, compile_expression
-from lumped.fom.model import Limits, Options
+from lumped.fom.model import FOMModel, Limits, Options
 from lumped.fom.run import RunOptions, simulate
 from lumped.fom.spec import Param, check_spec
 
@@ -183,3 +183,13 @@ def test_command_line_writes_fomout(tmp_path):
     code = main(["--model", str(tmp_path / "missing.json"), "--input", str(tmp_path / "in.json"),
                  "--out", str(tmp_path / "err.mat")])
     assert code == 1 and "error" in loadmat(tmp_path / "err.mat")
+
+
+def test_element_counts_override_the_preset():
+    spec = load_spec(NMC30)
+    m = FOMModel(spec, 0.5, 298.15, Options(mesh=3, elements={"sep": 7, "particle": 120}))
+    pts = {k.name: v for k, v in m.default_var_pts.items()}
+    assert pts["x_sep"] == 7 and pts["x_neg"] == pts["x_pos"] == 10       # preset 3: 10 per region
+    assert all(v == 120 for k, v in pts.items() if k.startswith("r_"))
+    with pytest.raises(ValueError):
+        Options(elements={"particle": 1})

@@ -151,6 +151,14 @@ out = simulate(spec, sim, RunOptions(model=Options(mesh=1, thermal=False,
 out["Vcell"], out["Phise"], out["xLocs"]["Phise"]  # simFOM's FOMout fields
 ```
 
+`Options(mesh=k)` picks a preset, and `Options(elements={"particle": 300})` overrides any of
+its counts (`neg`, `sep`, `pos`, `particle`). The presets give 20, 15, 10, 8 and 5 elements
+per region and 400, 200, 100, 50 and 30 per particle radius (levels 1 to 5). Particles get
+many elements because a diffusivity that changes by orders of magnitude over a narrow range of
+θ makes the surface stoichiometry step between elements, and the current then ripples along x.
+O'Regan's graphite gives a voltage ripple of 0.52 mV at 50 particle elements, 0.029 mV at 200
+and 0.012 mV at 400.
+
 From a shell, `python -m lumped.fom --model cell.json --input sim.json --out out.mat`
 writes FOMout to a MATLAB file (`--options` and `--progress` are optional).
 

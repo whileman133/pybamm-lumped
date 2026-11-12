@@ -1,6 +1,6 @@
 [project]
 name = "PyBaMM-lumped"
-version = "0.2.0"
+version = "0.2.1"
 description = "PyBaMM models for Plett and Trimboli's BMS III lumped-parameter cell models"
 readme = "README.md"
 license = "MIT"
