@@ -27,19 +27,19 @@ wheels = [
 
 [[package]]
 name = "casadi"
-version = "3.7.2"
+version = "3.6.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/62/1e98662024915ecb09c6894c26a3f497f4afa66570af3f53db4651fc45f1/casadi-3.7.2.tar.gz", hash = "sha256:b4d7bd8acdc4180306903ae1c9eddaf41be2a3ae2fa7154c57174ae64acdc60d", size = 6053600, upload-time = "2025-09-10T10:05:49.521Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/e0/8d2c6a350101b6f73548a1ceba4b93b60e436060ed647e5fb5d5e0b17fed/casadi-3.6.7.tar.gz", hash = "sha256:21cde87288afebb32a2a035bf6b6a91a025e24ee14aba7a0ae5515707b9887c1", size = 5132668, upload-time = "2024-09-30T18:59:58.14Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/c8/689d085447b1966f42bdb8aa4fbebef49a09697dbee32ab02a865c17ac1b/casadi-3.7.2-cp312-none-macosx_10_13_x86_64.macosx_10_13_intel.whl", hash = "sha256:309ea41a69c9230390d349b0dd899c6a19504d1904c0756bef463e47fb5c8f9a", size = 47116756, upload-time = "2025-09-10T07:53:00.931Z" },
-    { url = "https://files.pythonhosted.org/packages/1e/c0/3c4704394a6fd4dfb2123a4fd71ba64a001f340670a3eba45be7a19ac736/casadi-3.7.2-cp312-none-macosx_11_0_arm64.whl", hash = "sha256:6033381234db810b2247d16c6352e679a009ec4365d04008fc768866e011ed58", size = 42293718, upload-time = "2025-09-10T08:07:16.415Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/24/4cf05469ddf8544da5e92f359f96d716a97e7482999f085a632bc4ef344a/casadi-3.7.2-cp312-none-manylinux2014_aarch64.whl", hash = "sha256:732f2804d0766454bb75596339e4f2da6662ffb669621da0f630ed4af9e83d6a", size = 47276175, upload-time = "2025-09-10T08:08:09.29Z" },
-    { url = "https://files.pythonhosted.org/packages/82/08/b5f57fea03128efd5c860673b6ac44776352e6c1af862b8177f4c503fffe/casadi-3.7.2-cp312-none-manylinux2014_i686.whl", hash = "sha256:cf17298ff0c162735bdf9bf72b765c636ae732130604017a3b52e26e35402857", size = 72430454, upload-time = "2025-09-10T08:09:10.781Z" },
-    { url = "https://files.pythonhosted.org/packages/24/ab/d7233c915b12c005655437c6c4cf0ae46cbbb2b20d743cb5e4881ad3104a/casadi-3.7.2-cp312-none-manylinux2014_x86_64.whl", hash = "sha256:cde616930fa1440ad66f1850670399423edd37354eed9b12e74b3817b98d1187", size = 75568903, upload-time = "2025-09-10T08:10:07.108Z" },
-    { url = "https://files.pythonhosted.org/packages/3e/b9/5b984124f539656efdf079f3d8f09d73667808ec8d0546e6bce6dc60ade6/casadi-3.7.2-cp312-none-win_amd64.whl", hash = "sha256:81d677d2b020c1307c1eb25eae15686e5de199bb066828c3eaabdfaaaf457ffd", size = 50991347, upload-time = "2025-09-10T08:10:46.629Z" },
+    { url = "https://files.pythonhosted.org/packages/73/96/1f8323b62c663898179dd0c74edbe09ae94d674eed4ad5eb95c40d3bb49d/casadi-3.6.7-cp312-none-macosx_10_13_x86_64.macosx_10_13_intel.whl", hash = "sha256:f780e496157ab1caeb6fe19079e4508c2d7a9f5489b298e04c40438a3ba0caf4", size = 44955332, upload-time = "2024-09-30T20:12:55.997Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/49/8a1ff97a94e219142d36c7c0b70d6ad7c79c4927efa53d5a8be29a51a32b/casadi-3.6.7-cp312-none-macosx_11_0_arm64.whl", hash = "sha256:c02a304f5e8b147bca343e84b4de39629e2b761901c1fe99ecffa66c99875b80", size = 40416554, upload-time = "2024-09-30T20:14:52.741Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/dd/242806ccb9d36f6c006d43ad844c752566ed8cc0c0f026a86b3c8c7c2ecb/casadi-3.6.7-cp312-none-manylinux2014_aarch64.whl", hash = "sha256:290e92a7e2f4cecffc229dc196a85855e7dbedf6929eed1850b27e4ad8ad67f0", size = 43904952, upload-time = "2024-09-30T20:17:01.416Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/4c/d6547e51d066df4225a11770360ebcf38532d218fafc07824683ce5253fa/casadi-3.6.7-cp312-none-manylinux2014_i686.whl", hash = "sha256:c7c1502a042efb321da1556e94cc8ef6a035785b9ebcb5ddd4676b32e58d09f8", size = 70246100, upload-time = "2024-09-30T20:20:45.394Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/21/d4bc8c6a492fadecd68128de97595aa8038a6f31fb57159d52a8013e2f06/casadi-3.6.7-cp312-none-manylinux2014_x86_64.whl", hash = "sha256:16042ef095117704312be53389a0f22ab7a0968131db2bf785663d8003957a95", size = 73408033, upload-time = "2024-09-30T20:24:20.697Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/7c/ef71d5988bf4588d298a3b5cbf6ae50621dad4e291f471b5c653ef95b4b8/casadi-3.6.7-cp312-none-win_amd64.whl", hash = "sha256:7f65e7444ddb15f521e0dc5d61b2557054e264de1dea8d9990235336d3e80247", size = 44690057, upload-time = "2024-09-30T20:26:48.719Z" },
 ]
 
 [[package]]
@@ -395,7 +395,7 @@ wheels = [
 
 [[package]]
 name = "pybamm-lumped"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "casadi" },
@@ -414,12 +414,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "casadi", specifier = "~=3.7.2" },
+    { name = "casadi", specifier = "==3.6.7" },
     { name = "matplotlib", specifier = ">=3.10" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pybamm", specifier = "~=25.1.1" },
-    { name = "pybammsolvers", specifier = ">=0.8.2" },
+    { name = "pybammsolvers", specifier = "==0.1.0" },
     { name = "scipy", specifier = ">=1.15" },
 ]
 
@@ -428,18 +428,18 @@ dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "pybammsolvers"
-version = "0.8.2"
+version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "casadi" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/36/09/e63f0fdd4dbd9657f32028a4f1bc353987ade6028c0578b6433836c421a3/pybammsolvers-0.8.2.tar.gz", hash = "sha256:fb92fb785607df8ce3ad0d035c0bf61c418294f38f8c5fec82b18bff58c74042", size = 88433, upload-time = "2026-05-28T14:58:49.848Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/fd/00967d8331ce7628ba39f4c0b8be9bed073c7dc9a29033a0315677bd8601/pybammsolvers-0.1.0.tar.gz", hash = "sha256:cd7214d6a7d226feabedf82497f99caf3238e6ebce2aec16236bf7a5cea72d2c", size = 44795, upload-time = "2025-01-27T19:51:59.783Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/58/03d802811304928c3ef1676f355fbabf9aa5e324117d44472ce17c65501a/pybammsolvers-0.8.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:0d9517bb17bdff9de19ca976e07e7a44df35721abe96720cd7ea88b0008fe8c4", size = 923012, upload-time = "2026-05-28T14:58:29.478Z" },
-    { url = "https://files.pythonhosted.org/packages/89/06/59f312b686abaabf335986e48427f30dce84efaf5fa97e73e1b5117de45d/pybammsolvers-0.8.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:0351d33a44b868e6748f3a154dab6b1eafa4ade6da56be853850ceb52840dacf", size = 783129, upload-time = "2026-05-28T14:58:30.929Z" },
-    { url = "https://files.pythonhosted.org/packages/c1/81/bc2f627b7c13b3e0536f97f48afe170a100b402a99935b20c02a9afcde65/pybammsolvers-0.8.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f1261a2b4c218402ebfdb13faacb9a0a5af7e60e7e45ed11a7d727bd8c2e3e5b", size = 13377115, upload-time = "2026-05-28T14:58:32.47Z" },
-    { url = "https://files.pythonhosted.org/packages/84/0f/aab3fd48ef51b3372f70ebc91b689e74254803b2e46aae5f3b3890604e4f/pybammsolvers-0.8.2-cp312-cp312-win_amd64.whl", hash = "sha256:8698715185a73f3d2b5334a3b6447339cd0dfeacc834b9c138cb3a512f5f5f9b", size = 2156672, upload-time = "2026-05-28T14:58:34.441Z" },
+    { url = "https://files.pythonhosted.org/packages/82/11/1f395c6409a180dcd79877da2562f62048835abdea6a7867ef8bf1401b63/pybammsolvers-0.1.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:ccd26bb4f6585143097019460feff4c63d3eaca5c036d72eee4eabd6ef6ef267", size = 7062558, upload-time = "2025-01-27T19:51:38.957Z" },
+    { url = "https://files.pythonhosted.org/packages/00/45/035fe15fd92d351dc021ed2fb0068c87ebedf671bdfdeac7adf268810308/pybammsolvers-0.1.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5b45fdcf13dde3d69ef18450bb1dc4ec968ee57070576ad56ed91bfe915dd66f", size = 5333270, upload-time = "2025-01-27T19:51:41.143Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/2d/1ff1cb31b7e11d990b28a64610d181593b108f4361c59ef3fc2d27e3108b/pybammsolvers-0.1.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5a61b1591ec73d1de5500ac7e31a0cc315ced378512ead467c224ef53d4617bf", size = 15864006, upload-time = "2025-01-27T19:51:43.922Z" },
+    { url = "https://files.pythonhosted.org/packages/57/43/7f6b6f923bac36be735dc0bcc606f007d7eaa29d2ace84575fde0d7b8b62/pybammsolvers-0.1.0-cp312-cp312-win_amd64.whl", hash = "sha256:57af4d9583a6b1deb9ea7dcbb41081770b6286eaa500ed79e3b55d2ca77102d6", size = 1917758, upload-time = "2025-01-27T19:51:46.555Z" },
 ]
 
 [[package]]

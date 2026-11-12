@@ -131,6 +131,63 @@ Caveat for the test fixture `tests/data/cellNMCMSMR.xlsx` (from the BMS3 toolbox
 the same way), and its positive-electrode `k0` values give an exchange current of ~1e-5 A at 50% SOC,
 i.e. ~0.5 V of overpotential at C/10. The tests use it with `neg Cdl = 1 F`.
 
+## The toolbox FOM (`lumped.fom`)
+
+`lumped.fom` solves the BMS3 toolbox's lumped full-order model, the equations
+`genFOM.m` builds in COMSOL, from a compiled cell model that the toolbox exports
+as JSON (`exportLumpedModel.m`). MATLAB users call it through `simPyBaMM.m`, which
+installs this package by itself (`setupPyBaMM.m`); this section covers the Python
+side.
+
+```python
+from lumped.fom import load_spec
+from lumped.fom.model import Limits, Options
+from lumped.fom.run import RunOptions, simulate
+
+spec = load_spec("cell.json")                    # checks every parameter against MATLAB
+sim = {"time": t, "Iapp": I, "T": 25.0, "SOC0": 20}   # simFOM's simData: ZOH, discharge > 0
+out = simulate(spec, sim, RunOptions(model=Options(mesh=1, thermal=False,
+                                                    limits=Limits(Vmax=4.2, phiseMin=0.0))))
+out["Vcell"], out["Phise"], out["xLocs"]["Phise"]  # simFOM's FOMout fields
+```
+
+From a shell, `python -m lumped.fom --model cell.json --input sim.json --out out.mat`
+writes FOMout to a MATLAB file (`--options` and `--progress` are optional).
+
+What the model covers:
+
+- Standard and MSMR electrodes, blended electrodes (several materials sharing
+  φs, φe and θe), and a lithium-foil negative electrode (half cells).
+- Every parameter as a scalar, an MSMR gallery vector, a lookup table (linear,
+  with linear extrapolation, a temperature slope or a per-kelvin scale), or an
+  expression in x and T, each times its scale and Arrhenius factor. Each takes the
+  argument genFOM gives it (θe, the surface stoichiometry, or 0.5).
+- Explicit or Baker–Verbrugge solid diffusivity, the series Rdl–Cdl double layer
+  behind Rf, and the flux form of electrolyte transport when the cell gives
+  `t0mNorm`.
+- The lumped thermal model (`addThermalModel.m`) and the charge limits
+  (`addChargeLimits.m`): Vmax, φse at the neg/sep and sep/pos boundaries, θe at the
+  current collectors (a PI controller on the current), and an SOC stop.
+
+Validation and differences from COMSOL:
+
+- On the SKON603 cell (a two-material negative electrode), a 2C fast charge
+  matches the stored COMSOL run to 1.5 mV RMS in voltage and 0.06 mV RMS in φse
+  at the separator. It runs in 20 s at the finest mesh, against COMSOL's 125 s.
+- The tests check charge conservation for each topology, that a blend of two
+  identical half-size materials equals the single material, and that the flux form
+  with unit transference equals the legacy form.
+- Finite volumes replace COMSOL's finite elements, and particles use a uniform
+  radial mesh; the surface-flux condition then delivers exactly the faradaic
+  charge, however steeply Ds varies.
+- Outputs are sampled 2.5 ms after each sample time, as simFOM does by default.
+- A charge limit takes over at the instant it binds, found by a solver event,
+  rather than at COMSOL's once-a-second check. COMSOL's exchange-current
+  relaxation (`relaxExchangeCurrentSingularity`) has no counterpart.
+
+`scripts/make_fom_fixtures.m` writes the test fixtures (`tests/data/*.json`) from a
+toolbox checkout.
+
 ## Module map (vs. the original scripts)
 
 | Original | Package |
@@ -162,6 +219,8 @@ match outputs from the original code (`tests/data/reference-outputs.npz`) to a r
 If you intentionally change model behavior, regenerate that file and say why in the commit.
 
 `pybamm` is pinned to `~=25.1.1` because the models and the vendored EIS code use PyBaMM internals.
+Its IDAKLU solver needs the matching `pybammsolvers` (0.1.0) and the CasADi release that
+solver was built with (3.6.7), so both are pinned too.
 
 ## License
 

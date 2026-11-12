@@ -1,6 +1,6 @@
 [project]
 name = "PyBaMM-lumped"
-version = "0.1.1"
+version = "0.2.0"
 description = "PyBaMM models for Plett and Trimboli's BMS III lumped-parameter cell models"
 readme = "README.md"
 license = "MIT"
@@ -12,9 +12,10 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     # pybamm internals are used by the models and the vendored EIS code; bump deliberately.
     "pybamm~=25.1.1",
-    # pybammsolvers is built against one casadi release; an unpinned install mixes them.
-    "casadi~=3.7.2",
-    "pybammsolvers>=0.8.2",
+    # The IDAKLU solver (pybammsolvers) must match pybamm's solver interface and is built
+    # against one casadi release; pybamm 25.1.1 pairs with pybammsolvers 0.1.0 and casadi 3.6.7.
+    "casadi==3.6.7",
+    "pybammsolvers==0.1.0",
     "scipy>=1.15",
     "pandas>=2.2",
     "openpyxl>=3.1",
