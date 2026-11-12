@@ -1,0 +1,35 @@
+[project]
+name = "PyBaMM-lumped"
+version = "0.1.0"
+description = "PyBaMM models for Plett and Trimboli's BMS III lumped-parameter cell models"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Wesley Hileman" }
+]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # pybamm internals are used by the models and the vendored EIS code; bump deliberately.
+    "pybamm~=25.1.1",
+    "casadi>=3.6",
+    "scipy>=1.15",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "matplotlib>=3.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.19,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "lumped"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
