@@ -169,10 +169,18 @@ What the model covers:
 - Every parameter as a scalar, an MSMR gallery vector, a lookup table (linear,
   with linear extrapolation, a temperature slope or a per-kelvin scale), or an
   expression in x and T, each times its scale and Arrhenius factor. Each takes the
-  argument genFOM gives it (θe, the surface stoichiometry, or 0.5).
-- Explicit or Baker–Verbrugge solid diffusivity, the series Rdl–Cdl double layer
+  argument genFOM gives it (θe, the surface stoichiometry, or 0.5). An MSMR
+  material's OCP and slope come from its galleries, exact at every temperature.
+- Explicit or Baker–Verbrugge solid diffusivity (stretched by `mD` when given:
+  Ds = Dsref·(f·θ(1−θ)·|dU/dθ|)^mD), for standard and MSMR materials alike (an MSMR
+  particle's flux in U is Ds·dθ/dU·∇U).
+- Each material's kinetics apart from its OCP: MSMR (a k0 and α per gallery) or
+  Butler–Volmer (one k0, which may vary with the surface stoichiometry, and one α),
+  as the file's `kinetics` list for each electrode says; a file without it uses
+  MSMR for galleries with a k0 each and Butler–Volmer otherwise. The series Rdl–Cdl double layer
   behind Rf, and the flux form of electrolyte transport when the cell gives
-  `t0mNorm`.
+  `t0mNorm`. The electrolyte current's diffusion term is κ̄D·`t0mNorm`, since the
+  toolbox lumps κ̄D at the reference transference number.
 - The lumped thermal model (`addThermalModel.m`) and the charge limits
   (`addChargeLimits.m`): Vmax, φse at the neg/sep and sep/pos boundaries, θe at the
   current collectors (a PI controller on the current), and an SOC stop.
@@ -183,14 +191,26 @@ Validation and differences from COMSOL:
   matches the stored COMSOL run to 1.5 mV RMS in voltage and 0.06 mV RMS in φse
   at the separator. It runs in 20 s at the finest mesh, against COMSOL's 125 s.
 - The tests check charge conservation for each topology, that a blend of two
-  identical half-size materials equals the single material, and that the flux form
-  with unit transference equals the legacy form.
+  identical half-size materials equals the single material, that the flux form
+  with unit transference equals the legacy form, that an MSMR material given
+  the Baker–Verbrugge Ds(θ) explicitly matches one given Dsref, that a stretch of 1
+  is plain Baker–Verbrugge, and that Butler–Volmer on MSMR galleries, with k0(θ)
+  their total exchange current, runs as the galleries do.
 - Finite volumes replace COMSOL's finite elements, and particles use a uniform
   radial mesh; the surface-flux condition then delivers exactly the faradaic
   charge, however steeply Ds varies.
 - Outputs are sampled 2.5 ms after each sample time, as simFOM does by default.
+- The solver runs at most 100 samples per call, so a failure keeps the results
+  so far. A restart with unchanged inputs carries a consistent state, so IDAKLU
+  initialises from it without CasADi's Newton solve. A restart with new inputs
+  uses CasADi, and IDAKLU's initialisation when CasADi's Newton solve fails.
 - A charge limit takes over at the instant it binds, found by a solver event,
-  rather than at COMSOL's once-a-second check. COMSOL's exchange-current
+  rather than at COMSOL's once-a-second check. One limit holds the current at a
+  time. When another binds, it takes over without a jump in the current, and the
+  limit it relieves engages again if it gets worse than at the handover. A θe limit's
+  PI controller only cuts the current, between its demand and zero (a smooth
+  clamp, with anti-windup), and releases when it no longer asks for a cut.
+  COMSOL's controller (`addChargeLimits.m`) has no clamp. COMSOL's exchange-current
   relaxation (`relaxExchangeCurrentSingularity`) has no counterpart.
 
 `scripts/make_fom_fixtures.m` writes the test fixtures (`tests/data/*.json`) from a

@@ -24,6 +24,10 @@ from .spec import CellSpec, Param, SpecError
 #   only a fine radial mesh keeps the current from rippling along x.
 MESH = {"region": [20, 15, 10, 8, 5], "radial": [400, 200, 100, 50, 30]}
 BIG = 1e6        # moves an inactive event or mode term out of the way
+RELEASE_MARGIN = 1e-6   # release event margin, per ampere of demand (plus 1 A)
+CLAMP_SHARPNESS = 50.0  # the theta_e limit's current cut: smooth clamp to [0, 1] [1/cut]
+CLAMP_OFFSET = 5 / CLAMP_SHARPNESS   # the clamp's shift, so a zero cut leaves the current at its demand
+LIMIT_SLACK = 1e-6      # how far past its start an inactive limit engages [V, or theta_e]
 
 
 @dataclass
@@ -79,6 +83,15 @@ class Options:
         self.elements = {k: int(n) for k, n in self.elements.items()}
 
 
+def _smooth_pos(x, k=CLAMP_SHARPNESS):
+    """
+    A smooth max(x, 0): max(x, 0) + log(1 + exp(-k|x|))/k, without overflow.
+
+    Within log(2)/k of max(x, 0) everywhere; its slope is the logistic function of k*x.
+    """
+    return pybamm.maximum(x, 0) + pybamm.log(1 + pybamm.exp(-k * pybamm.AbsoluteValue(x))) / k
+
+
 def _nice_pow(x, y):
     """x^y with a non-negative base (genFOM nicePow)."""
     return pybamm.maximum(x, 1e-12) ** y
@@ -109,7 +122,8 @@ class FOMModel(pybamm.BaseModel):
     Notes
     -----
     Inputs: 'Ides [A]' (the demanded current), 'Tamb [K]' (ambient), and, with
-    charge limits, one mode flag per limit ('mode <name>', 0 or 1).
+    charge limits, one mode flag per limit ('mode <name>', 0 or 1) and how far
+    past its bound each engages ('slack <name>').
     """
 
     def __init__(self, spec: CellSpec, z0: float, T0: float, options: Options | None = None):
@@ -236,7 +250,26 @@ class FOMModel(pybamm.BaseModel):
     # -- electrodes -------------------------------------------------------------
 
     def _is_msmr(self, e, i):
+        """Whether material i has MSMR galleries (its OCP)."""
         return self.spec.MSMR and self._has(e, "U0", i) and self._p(e, "U0", i).type == "vector"
+
+    def _kinetics(self, e, i):
+        """
+        Material i's kinetics, 'MSMR' (a k0 per gallery) or 'BV' (one k0, a function
+        of theta_ss): the file's choice, else MSMR for galleries with a k0 each.
+        """
+        kin = self.spec[e].kinetics
+        if i < len(kin):
+            return kin[i]
+        if not self._is_msmr(e, i):
+            return "BV"
+        k0 = self._p(e, "k0", i)
+        one = k0.type != "vector" or np.size(k0.value) == 1
+        return "BV" if one and self._p(e, "U0", i).size > 1 else "MSMR"
+
+    def _stretch(self, e, i, Tp):
+        """Material i's Baker-Verbrugge stretch exponent mD (None: plain)."""
+        return self._p(e, "mD", i).expr(0.5, Tp) if self._has(e, "mD", i) else None
 
     def _electrodes(self):
         F, R = self.F, self.R
@@ -289,15 +322,30 @@ class FOMModel(pybamm.BaseModel):
                 thetass = thetass + gallery(Uss, j, f, T)[1]
             Rf = P("Rf", thetass)
             eta = phise - Uss - Rf * ifdl
-            i_f = 0
-            for j in range(J):
-                g, xss = gallery(Uss, j, f, T)
-                a = self._p(e, "alpha", i).expr(0.5, T, j)
-                k0 = self._p(e, "k0", i).expr(0.5, T, j)
-                i0 = k0 * _nice_pow(xss, wp.expr(0.5, T, j)) * pybamm.exp((1 - a) * (Uss - U0p.expr(0.5, T, j)) * f) \
-                    * _nice_pow(thetae, 1 - a)
-                i_f = i_f + i0 * (pybamm.exp((1 - a) * f * eta) - pybamm.exp(-a * f * eta))
-            Dc = P("Dsref", 0.5, Tp) * fp * theta * (theta - 1)
+            if self._kinetics(e, i) == "BV":                 # one k0, a function of theta_ss
+                a = P("alpha")
+                i0 = P("k0", thetass) * _nice_pow(thetae, 1 - a) * _nice_pow(1 - thetass, 1 - a) \
+                    * _nice_pow(thetass, a)
+                i_f = i0 * (pybamm.exp((1 - a) * f * eta) - pybamm.exp(-a * f * eta))
+            else:
+                i_f = 0
+                for j in range(J):
+                    g, xss = gallery(Uss, j, f, T)
+                    a = self._p(e, "alpha", i).expr(0.5, T, j)
+                    k0 = self._p(e, "k0", i).expr(0.5, T, j)
+                    i0 = k0 * _nice_pow(xss, wp.expr(0.5, T, j)) \
+                        * pybamm.exp((1 - a) * (Uss - U0p.expr(0.5, T, j)) * f) * _nice_pow(thetae, 1 - a)
+                    i_f = i_f + i0 * (pybamm.exp((1 - a) * f * eta) - pybamm.exp(-a * f * eta))
+            # Flux in U: Ds*dtheta/dU*grad(U).
+            # - Baker-Verbrugge: Ds = Dsref*(f*theta*(1-theta)*(-dU/dtheta))^mD (mD = 1: plain).
+            # - Explicit: Ds as given, a function of theta.
+            mD = self._stretch(e, i, Tp)
+            if self._has(e, "Dsref", i) and mD is None:
+                Dc = P("Dsref", 0.5, Tp) * fp * theta * (theta - 1)
+            elif self._has(e, "Dsref", i):
+                Dc = P("Dsref", 0.5, Tp) * (fp * theta * (1 - theta) * (-1 / dthdU)) ** mD * dthdU
+            else:
+                Dc = P("Ds", theta, Tp) * dthdU
             self.rhs[Us] = pybamm.div(Dc * pybamm.grad(Us)) / dthdU
             self.boundary_conditions[Us] = {
                 "left": (pybamm.Scalar(0), "Neumann"),
@@ -315,9 +363,13 @@ class FOMModel(pybamm.BaseModel):
             a = P("alpha")
             i0 = P("k0", thetass) * _nice_pow(thetae, 1 - a) * _nice_pow(1 - thetass, 1 - a) * _nice_pow(thetass, a)
             i_f = i0 * (pybamm.exp((1 - a) * f * eta) - pybamm.exp(-a * f * eta))
-            if self._has(e, "Dsref", i):                     # Baker-Verbrugge
+            mD = self._stretch(e, i, Tp)
+            if self._has(e, "Dsref", i):                     # Baker-Verbrugge, stretched by mD when given
                 Ds = -P("Dsref", 0.5, Tp) * F / (R * Tp) * pybamm.AbsoluteValue(th * (th - 1)) \
                     * P("dUocp", th, Tp)
+                if mD is not None:
+                    Ds = P("Dsref", 0.5, Tp) * (F / (R * Tp) * pybamm.AbsoluteValue(th * (th - 1))
+                                                * pybamm.AbsoluteValue(P("dUocp", th, Tp))) ** mD
             else:
                 Ds = P("Ds", th, Tp)
             self.rhs[th] = pybamm.div(Ds * pybamm.grad(th))
@@ -365,7 +417,7 @@ class FOMModel(pybamm.BaseModel):
         cat = lambda d: pybamm.concatenation(*[_on(d[r], r) for r in self.regions])  # noqa: E731
         kappa = cat({r: self._p(r, "kappa").expr(th[r], T[r]) for r in self.regions})
         qe = cat({r: self._p(r, "qe").expr(th[r], T[r]) for r in self.regions})
-        kD = cat({r: self._const("kD", th[r], T[r]) for r in self.regions})
+        kD = cat({r: self._kD_eff(th[r], T[r]) for r in self.regions})   # kD*t0mNorm, as genFOM
         psi = cat({r: self._const("psi", th[r], T[r]) for r in self.regions})
         Tc = cat(T)
         self.thetae = cat(th)
@@ -467,6 +519,11 @@ class FOMModel(pybamm.BaseModel):
 
     # -- thermal model ----------------------------------------------------------
 
+    def _kD_eff(self, thetae, T):
+        """The electrolyte current's diffusion term kD*t0mNorm (kD lumped at the reference t+)."""
+        kD = self._const("kD", thetae, T)
+        return kD * self._const("t0mNorm", thetae, T) if self._has("const", "t0mNorm") else kD
+
     def _thermal(self):
         T, regions = self.T, self.regions
         cat = lambda d: pybamm.concatenation(*[_on(d[r], r) for r in regions])  # noqa: E731
@@ -475,9 +532,9 @@ class FOMModel(pybamm.BaseModel):
         q = {}
         for r in regions:
             gphie = pybamm.grad(self.phie_r[r])
-            kD05 = self._const("kD", 0.5, T[r])
+            kD = self._kD_eff(self.thetae_r[r], T[r])
             kappa = self._p(r, "kappa").expr(self.thetae_r[r], T[r])
-            Qe = pybamm.inner(kappa * (gphie + kD05 * T[r] / self.thetae_r[r] * pybamm.grad(self.thetae_r[r])), gphie)
+            Qe = pybamm.inner(kappa * (gphie + kD * T[r] / self.thetae_r[r] * pybamm.grad(self.thetae_r[r])), gphie)
             if r in self.electrodes:
                 Qi = sum(m["i_f"] * m["eta"] for m in self.mat[r])
                 Qr = 0
@@ -531,6 +588,8 @@ class FOMModel(pybamm.BaseModel):
         cc = 1
         residual = 0
         piXi = None
+        windup = 0
+        cuts = 0
         for name, s in lim.bounds:
             flag = pybamm.InputParameter(f"mode {name}")
             self.mode_flags[name] = flag
@@ -542,22 +601,40 @@ class FOMModel(pybamm.BaseModel):
                 if piXi is None:
                     piXi = pybamm.Variable("piXi")
                     self.piXi = piXi
+                # PI on the current, cutting it by a fraction cut of its demand:
+                # - Iapp = Ides*(1 - clamp(cut, 0, 1)): never past the demand, never reversed.
+                # - cut = sigma*(piXi - Kp*g), sigma = 1 on charge (-1 on discharge).
+                # - Anti-windup: past a full cut, the integrator is pulled back by the excess.
                 absI = pybamm.AbsoluteValue(self.Ides) + 1e-12
-                residual = residual + flag * ((self.Iapp - self.Ides) / absI + lim.thetaePinKp * g - piXi)
+                sigma = -self.Ides / absI
+                cut = sigma * (piXi - lim.thetaePinKp * g)
+                d = CLAMP_OFFSET                                     # clamp(cut - d, 0, 1), smoothly
+                held = _smooth_pos(cut - d) - _smooth_pos(cut - 1 - d)
+                residual = residual + flag * ((self.Iapp - self.Ides) / absI - sigma * held)
+                windup = windup + flag * sigma * _smooth_pos(cut - 1 - d)
+                cuts = cuts + flag * cut
             else:
                 residual = residual + flag * (mon[name] - thr)
-            self.events.append(pybamm.Event(f"limit {name}", g + BIG * flag))
+            # An inactive limit engages a slack past its bound (run.limit_slacks): a
+            # limit just handed over sits at its bound as a more restrictive one
+            # takes over, and an event at or below zero stops the solver.
+            slack = pybamm.InputParameter(f"slack {name}")
+            self.events.append(pybamm.Event(f"limit {name}", g + slack + BIG * flag))
         residual = residual + cc * (self.Iapp - self.Ides)
         self.algebraic[self.Iapp] = residual
         self.initial_conditions[self.Iapp] = self.Ides
         if piXi is not None:
             th = [n for n, _ in lim.bounds if n.startswith("thetae")]
-            self.rhs[piXi] = -sum(self.mode_flags[n] * self.indicators[n] for n in th) / lim.thetaePinTau
+            self.rhs[piXi] = -(sum(self.mode_flags[n] * self.indicators[n] for n in th) + windup) / lim.thetaePinTau
             self.initial_conditions[piXi] = pybamm.Scalar(0)
         # Release: a potential limit holds while it restricts the current (Iapp >= Ides);
-        # a theta_e limit while its integrator is non-negative.
+        # a theta_e limit while its controller asks for a cut (cut >= 0).
+        # - The margin keeps the release event positive as a limit engages, when the
+        #   current still equals its demand (an event at zero stops the solver).
+        # - It releases a microamp late per ampere of demand, which is negligible.
         pot = sum((self.mode_flags[n] for n, _ in lim.bounds if not n.startswith("thetae")), pybamm.Scalar(0))
-        self.events.append(pybamm.Event("limit release", (self.Iapp - self.Ides) + BIG * (1 - pot)))
+        margin = RELEASE_MARGIN * (pybamm.AbsoluteValue(self.Ides) + 1)
+        self.events.append(pybamm.Event("limit release", (self.Iapp - self.Ides) + margin + BIG * (1 - pot)))
         if piXi is not None:
             th_on = sum(self.mode_flags[n] for n, _ in lim.bounds if n.startswith("thetae"))
-            self.events.append(pybamm.Event("limit release thetae", piXi + 1e-9 + BIG * (1 - th_on)))
+            self.events.append(pybamm.Event("limit release thetae", cuts + RELEASE_MARGIN + BIG * (1 - th_on)))

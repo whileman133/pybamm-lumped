@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import pybamm
+from scipy.special import expit
 
 from .expr import compile_expression
 
@@ -30,7 +31,8 @@ class Param:
     One parameter descriptor: value(x, T) * scale * exp(Ea/R*(1/Tref - 1/T)).
 
     type is 'scalar', 'vector' (one entry per MSMR gallery), 'LUT' (linear
-    interpolation with linear extrapolation) or 'function' (an expression in x and T).
+    interpolation with linear extrapolation), 'function' (an expression in x and T)
+    or 'MSMR' (a material's OCP or OCP slope from its galleries, exact in T).
     A LUT may add a temperature slope (T - Tref)*dvalue, or be per kelvin (Tscale).
     """
     name: str
@@ -52,13 +54,16 @@ class Param:
             value = (np.asarray(value["x"], float), np.asarray(value["y"], float))
         elif d["type"] == "vector":
             value = np.atleast_1d(np.asarray(value, float))
+        elif d["type"] == "MSMR":
+            value = {k: np.atleast_1d(np.asarray(value[k], float)) for k in ("U0", "X", "omega")} \
+                | {"quantity": value["quantity"]}
         dvalue = np.asarray(d["dvalue"], float) if d.get("dvalue") is not None else None
         p = cls(name, d["type"], value, d.get("Ea", 0.0), d.get("scale", 1.0) or 1.0, d.get("xFixed"),
                 dvalue, bool(d.get("Tscale", False)), Tref, R)
         if p.type == "function":
             p._fn["numpy"] = compile_expression(value, "numpy")
             p._fn["pybamm"] = compile_expression(value, "pybamm")
-        elif p.type not in ("scalar", "vector", "LUT"):
+        elif p.type not in ("scalar", "vector", "LUT", "MSMR"):
             raise SpecError(f"Parameter {name}: unknown descriptor type '{p.type}'.")
         return p
 
@@ -83,6 +88,8 @@ class Param:
                 base = base + (T - self.Tref) * _interp_extrap(x, xs, self.dvalue)
             if self.Tscale:
                 base = T * base
+        elif self.type == "MSMR":
+            base = msmr_ocp(x, T, **self.value)
         else:
             base = self._fn["numpy"](x, T) * np.ones(np.broadcast(x, T).shape)
         return self.scale * base * np.exp(np.asarray(self.Ea, float) / self.R * (1 / self.Tref - 1 / T))
@@ -91,18 +98,22 @@ class Param:
         """
         PyBaMM expression at x and T (symbols or numbers).
 
-        j picks one entry of a vector parameter.
+        j picks one entry of a vector parameter; a one-entry vector needs none.
         """
         T = pybamm.Scalar(self.Tref) if T is None else T
         x = self.xFixed if self.xFixed is not None else x
         Ea = self.Ea
         if self.type == "vector":
+            if j is None and self.value.size == 1:
+                j = 0                                             # one entry: its value, as in MATLAB
             if j is None:
                 raise SpecError(f"Parameter {self.name} is a vector; give the entry j.")
             base = pybamm.Scalar(float(self.value[j]))
             Ea = np.atleast_1d(Ea)[j] if np.size(Ea) > 1 else float(np.atleast_1d(Ea)[0])
         elif self.type == "scalar":
             base = pybamm.Scalar(float(self.value))
+        elif self.type == "MSMR":
+            raise SpecError(f"Parameter {self.name} comes from MSMR galleries; the model solves them directly.")
         elif self.type == "LUT":
             xs, ys = self.value
             xsym = x if isinstance(x, pybamm.Symbol) else pybamm.Scalar(float(x))
@@ -122,6 +133,47 @@ class Param:
         return out
 
 
+def msmr_ocp(theta, T, U0, X, omega, quantity="U", R=8.3144621):
+    """
+    A material's OCP or OCP slope from its MSMR galleries (MATLAB msmrOCP).
+
+    Parameters
+    ----------
+    theta : array_like
+        Stoichiometries.
+    T : array_like
+        Temperatures, broadcast against theta. [K]
+    U0, X, omega : ndarray of shape (J,)
+        Gallery potentials [V], capacity fractions and ideality factors.
+    quantity : {"U", "dU"}
+        The OCP or its slope dU/dtheta.
+
+    Returns
+    -------
+    y : ndarray, the broadcast shape of theta and T
+        OCP [V] or its slope [V].
+
+    Notes
+    -----
+    Bisects theta(U) = sum_j X_j/(1 + exp(f*(U - U0_j)/omega_j)), f = F/(R*T).
+    Exact for theta in [0.001, 0.999]; beyond, U extends linearly with the end
+    slope and dU/dtheta holds its end value.
+    """
+    theta, TT = np.broadcast_arrays(np.asarray(theta, float), np.asarray(T, float))
+    th = np.clip(theta, 1e-3, 1 - 1e-3)[..., None]
+    f = 96485.3365 / (R * TT)[..., None]
+    span = 60 * omega.max() / f
+    lo, hi = U0.min() - span, U0.max() + span
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        above = np.sum(X * expit(-f * (mid - U0) / omega), axis=-1, keepdims=True) > th
+        lo, hi = np.where(above, mid, lo), np.where(above, hi, mid)
+    U = (lo + hi) / 2
+    x = X * expit(-f * (U - U0) / omega)
+    dU = -1 / (f[..., 0] * np.sum(x / omega * (1 - x / X), axis=-1))
+    return U[..., 0] + dU * (theta - th[..., 0]) if quantity == "U" else dU
+
+
 def _interp_extrap(x, xs, ys):
     """Linear interpolation with linear extrapolation (MATLAB interp1 'linear','extrap')."""
     y = np.interp(x, xs, ys)
@@ -132,12 +184,18 @@ def _interp_extrap(x, xs, ys):
 
 @dataclass
 class Region:
-    """A cell region: shared parameters and, for an electrode, its materials."""
+    """
+    A cell region: shared parameters and, for an electrode, its materials.
+
+    kinetics lists each material's kinetics, 'MSMR' or 'BV', apart from its OCP;
+    empty in a file that predates it (then chosen from k0, as MATLAB does).
+    """
     name: str
     kind: str
     params: dict[str, Param]
     materials: list[dict[str, Param]]
     labels: list[str]
+    kinetics: list[str] = field(default_factory=list)
 
     def __getitem__(self, name: str) -> Param:
         return self.params[name]
@@ -194,7 +252,9 @@ def load_spec(path, check: bool = True) -> CellSpec:
     for name, r in d["regions"].items():
         params = {k: Param.from_json(k, v, Tref, R) for k, v in r.get("params", {}).items()}
         mats = [{k: Param.from_json(k, v, Tref, R) for k, v in m.items()} for m in r.get("materials", [])]
-        regions[name] = Region(name, r.get("kind", ""), params, mats, list(r.get("labels", [])))
+        kin = r.get("kinetics", [])
+        kin = [kin] if isinstance(kin, str) else list(kin)
+        regions[name] = Region(name, r.get("kind", ""), params, mats, list(r.get("labels", [])), kin)
     spec = CellSpec(d.get("name", ""), d.get("fingerprint", ""), bool(d.get("MSMR", 0)), bool(d.get("thermal", 0)),
                     regions, d["F"], R, Tref, {k: d[k] for k in ("toolbox", "created") if k in d})
     if check:

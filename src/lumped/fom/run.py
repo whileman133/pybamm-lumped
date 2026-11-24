@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pybamm
 
-from .model import FOMModel, Limits, Options
+from .model import CLAMP_OFFSET, LIMIT_SLACK, FOMModel, Limits, Options
 from .spec import CellSpec
 
 TOLERANCES = {"tight": (1e-6, 1e-8), "medium": (1e-5, 1e-7), "loose": (1e-4, 1e-6)}
@@ -119,6 +119,9 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
     rtol, atol = TOLERANCES[opts.tolerances]
     solver_opts = {"max_step_size": float(opts.max_step)} if opts.max_step > 0 else {}
     solver = pybamm.IDAKLUSolver(rtol=rtol, atol=atol, options=solver_opts)
+    # IDAKLU's own initialisation, without CasADi's Newton solve (_step).
+    carry = pybamm.IDAKLUSolver(rtol=rtol, atol=atol, options=solver_opts, root_method=None)
+    carried = None                                      # the inputs a consistent carried state ran under
     limits = opts.model.limits
     modes = [n for n, _ in limits.bounds]
     mode = None
@@ -138,10 +141,12 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
         while t < tb - 1e-12:
             inputs = {"Ides [A]": Ides, "Tamb [K]": Tamb}
             inputs.update({f"mode {n}": float(n == mode) for n in modes})
+            inputs.update(limit_slacks(model, state, inputs, modes))
             ts_want = np.minimum(tq[tq + TSHIFT > t + 1e-12] + TSHIFT, tb)
             t_interp = np.unique(np.concatenate([[0.0], ts_want - t, [tb - t]]))
+            key = (Ides, Tamb, mode)
             try:
-                sol = solver.step(state, model, tb - t, inputs=inputs, t_interp=t_interp, save=False)
+                sol = _step(solver, carry, state, key == carried, model, tb - t, inputs, t_interp)
             except pybamm.SolverError as err:
                 termination, stop = "failed", True
                 message = f"PyBaMM stopped between t = {t:.6g} s and {tb:.6g} s: {err}"
@@ -159,6 +164,7 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
             t = ts[-1]
             state = _carrier(sol, model, inputs)
             term = sol.termination or ""
+            carried = None if term.startswith("event:") else key
             if term.startswith("event:"):
                 name = term.split("event:", 1)[1].strip()
                 if name == "SOC limit":
@@ -170,7 +176,7 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
                 elif name.startswith("limit "):
                     mode = name.split("limit ", 1)[1]
                     if mode.startswith("thetae"):
-                        state = _reset_integrator(state, model)
+                        state = _reset_integrator(state, model, inputs, mode, modes)
             prev_Ides = Ides
             prev_Iapp = float(sol["Iapp [A]"].entries[-1])
         if stop:
@@ -184,6 +190,70 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
     return out
 
 
+def _step(solver, carry, state, unchanged, model, dt, inputs, t_interp):
+    """
+    One solver step, with CasADi's initialisation only where it is needed.
+
+    Notes
+    -----
+    * The first step makes the algebraic states consistent by a CasADi Newton solve.
+    * A restart with unchanged inputs (a chunk) carries a consistent state, so
+      IDAKLU initialises from it directly.
+    * A restart with new inputs (a current step, a limit switch) uses CasADi,
+      and IDAKLU's initialisation when CasADi's Newton solve fails on an
+      ill-conditioned Jacobian (seen on a coarse mesh).
+    """
+    args = dict(inputs=inputs, t_interp=t_interp, save=False)
+    if state is not None and unchanged:
+        return carry.step(state, model, dt, **args)
+    try:
+        return solver.step(state, model, dt, **args)
+    except pybamm.SolverError as err:
+        if state is None or "consistent states" not in str(err):
+            raise
+        return carry.step(state, model, dt, **args)
+
+
+def limit_slacks(model, state, inputs, modes):
+    """
+    How far past its bound each limit engages, from the state a step starts in.
+
+    Parameters
+    ----------
+    model : FOMModel
+        The discretised model.
+    state : pybamm.Solution or None
+        The state the step starts from; None at the start of the run.
+    inputs : dict
+        The step's inputs, mode flags included.
+    modes : list of str
+        The limits' names.
+
+    Returns
+    -------
+    slacks : dict
+        'slack <name>': LIMIT_SLACK, or more for a limit that starts past its bound.
+
+    Notes
+    -----
+    One limit holds the current at a time. When a more restrictive limit takes
+    over, the one it relieves can sit just past its bound (a theta_e hold tracks
+    it to its controller's error). That limit then engages only when it gets
+    worse than it starts, so the solver can restart while it still guards it.
+    """
+    slacks = {f"slack {n}": LIMIT_SLACK for n in modes}
+    if state is None:
+        return slacks
+    y = state.all_ys[-1][:, -1]
+    free = {**inputs, **{f"mode {n}": 0.0 for n in modes}, **{k: 0.0 for k in slacks}}
+    for e in model.events:
+        n = e.name[len("limit "):]
+        if e.name.startswith("limit ") and n in modes:
+            g = float(e.expression.evaluate(state.t[-1], y, inputs=free))
+            slacks[f"slack {n}"] = LIMIT_SLACK + max(0.0, -g)
+    return slacks
+
+
 def _carrier(sol, model, inputs):
     """A one-point solution at the end of sol, so step() continues from it after an event."""
     y = sol.all_ys[-1][:, -1:]
@@ -191,11 +261,23 @@ def _carrier(sol, model, inputs):
     return s
 
 
-def _reset_integrator(state, model):
-    """Zero the theta_e PI integrator (bumpless transfer on entering a theta_e limit)."""
-    sl = model.y_slices[model.piXi][0]
+def _reset_integrator(state, model, inputs, mode, modes):
+    """
+    Set the theta_e PI integrator for a bumpless transfer into a theta_e limit.
+
+    The integrator takes the value whose cut keeps the current where it is: no
+    cut from the demand, or the held current's cut when another limit hands over.
+    """
     y = state.all_ys[-1].copy()
-    y[sl] = 0
+    free = {**inputs, **{f"mode {n}": 0.0 for n in modes}, **{f"slack {n}": 0.0 for n in modes}}
+    g = next(float(e.expression.evaluate(state.t[-1], y[:, -1], inputs=free))
+             for e in model.events if e.name == f"limit {mode}")
+    Ides = inputs["Ides [A]"]
+    absI = abs(Ides) + 1e-12
+    sigma = -Ides / absI
+    held = sigma * (float(state["Iapp [A]"].entries[-1]) - Ides) / absI     # the current's cut, 0..1
+    cut = held + CLAMP_OFFSET if held > 1e-9 else 0.0
+    y[model.y_slices[model.piXi][0]] = sigma * cut + model.options.limits.thetaePinKp * g
     return pybamm.Solution(state.t, y, model, state.all_inputs[-1], termination="final time")
 
 

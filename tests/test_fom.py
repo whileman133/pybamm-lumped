@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pybamm
 import pytest
 from scipy.io import loadmat
 
@@ -14,12 +15,13 @@ from lumped.fom import SpecError, load_spec
 from lumped.fom.__main__ import main
 from lumped.fom.expr import ExpressionError, compile_expression
 from lumped.fom.model import FOMModel, Limits, Options
-from lumped.fom.run import RunOptions, simulate
+from lumped.fom.run import CHUNK, RunOptions, _step, simulate
 from lumped.fom.spec import Param, check_spec
 
 DATA = Path(__file__).parent / "data"
 NMC30 = DATA / "cellNMC30.json"
 MSMR = DATA / "cellNMCMSMR.json"
+SKON = DATA / "cellSKON603.json"
 
 
 def spec_from(d: dict, tmp_path, name="cell.json"):
@@ -73,6 +75,24 @@ def test_lut_temperature_slope_and_per_kelvin():
     q = Param("dU", "LUT", (np.array([0.0, 1.0]), np.array([1.0, 2.0])), Tscale=True)
     assert q(2.0, 300.0) == pytest.approx(300.0 * 3.0)       # linear extrapolation, times T
 
+
+
+
+def test_a_one_entry_vector_reads_as_its_value():
+    p = Param("Rf", "vector", np.array([2e-3]))
+    assert float(p.expr(0.5).evaluate()) == pytest.approx(2e-3)
+    with pytest.raises(SpecError):
+        Param("k0", "vector", np.array([1.0, 2.0])).expr(0.5)
+
+def test_msmr_ocp_is_exact_at_each_temperature():
+    # One gallery: U = U0 + (omega/f)*ln(X/theta - 1), dU/dtheta = -(omega/f)*X/(theta*(X - theta)).
+    g = {"U0": [0.2], "X": [0.9], "omega": [1.5]}
+    th, T = np.array([0.1, 0.45, 0.8]), 263.15
+    w_f = 1.5 * 8.3144621 * T / 96485.3365
+    U = Param.from_json("Uocp", {"type": "MSMR", "value": g | {"quantity": "U"}, "Ea": 0}, 298.15, 8.3144621)
+    dU = Param.from_json("dUocp", {"type": "MSMR", "value": g | {"quantity": "dU"}, "Ea": 0}, 298.15, 8.3144621)
+    assert U(th, T) == pytest.approx(0.2 + w_f * np.log(0.9 / th - 1), abs=1e-9)
+    assert dU(th, T) == pytest.approx(-w_f * 0.9 / (th * (0.9 - th)), rel=1e-6)
 
 # -- charge conservation across topologies -------------------------------------
 
@@ -132,6 +152,81 @@ def test_flux_form_with_unit_transference_is_the_legacy_form(nmc30, tmp_path):
     np.testing.assert_allclose(flux["Thetae"], legacy["Thetae"], atol=1e-4)
 
 
+def test_msmr_explicit_ds_matches_baker_verbrugge(tmp_path):
+    """An MSMR material given Ds(theta) from the Baker-Verbrugge law runs as one given Dsref."""
+    d = json.loads(MSMR.read_text())
+    f = d["F"] / (d["R"] * d["Tref"])
+    for e in ("neg", "pos"):
+        m = d["regions"][e]["materials"][0]
+        U0, X, w = (np.asarray(m[k]["value"], float)[:, None] for k in ("U0", "X", "omega"))
+        U = np.linspace(U0.min() - 1, U0.max() + 1, 20001)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):    # far gallery tails
+            g = np.exp(f * (U - U0) / w)
+            theta = (X / (1 + g)).sum(0)
+            dthdU = -(f * X * g / w / (1 + g) ** 2).sum(0)
+            ds = m.pop("Dsref")["value"] * f * theta * (1 - theta) / -dthdU
+        keep = np.isfinite(ds) & (np.diff(theta, prepend=np.inf) < 0)       # theta falls with U
+        m["Ds"] = {"type": "LUT", "Ea": 0, "scale": 1,
+                   "value": {"x": theta[keep][::-1].tolist(), "y": ds[keep][::-1].tolist()}}
+    bv, _ = discharge(load_spec(MSMR), t_on=300, t_end=600)
+    explicit, _ = discharge(spec_from(d, tmp_path), t_on=300, t_end=600)
+    assert explicit["termination"] == "final time"
+    np.testing.assert_allclose(explicit["Vcell"], bv["Vcell"], atol=2e-3)
+
+
+def test_bv_kinetics_on_msmr_galleries_match_their_exchange_current(tmp_path):
+    """
+    Butler-Volmer on an MSMR material, with k0(theta) the galleries' total exchange
+    current over theta^a*(1-theta)^(1-a), runs as the galleries do (one alpha for all).
+    """
+    d = json.loads(MSMR.read_text())
+    f = d["F"] / (d["R"] * d["Tref"])
+    for e in ("neg", "pos"):
+        m = d["regions"][e]["materials"][0]
+        m["alpha"] = {"type": "vector", "Ea": 0, "scale": 1, "value": [0.5] * len(m["U0"]["value"])}
+    bv = copy.deepcopy(d)
+    for e in ("neg", "pos"):
+        m = bv["regions"][e]["materials"][0]
+        U0, X, w, k0 = (np.asarray(m[k]["value"], float)[:, None] for k in ("U0", "X", "omega", "k0"))
+        U = np.linspace(U0.min() - 1, U0.max() + 1, 20001)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore", under="ignore"):
+            g = np.exp(f * (U - U0) / w)
+            x = X / (1 + g)
+            theta = x.sum(0)
+            i0 = (k0 * x ** w * np.exp(0.5 * (U - U0) * f)).sum(0)
+            k = i0 / np.sqrt(theta * (1 - theta))
+        keep = np.isfinite(k) & (k > 0) & (np.diff(theta, prepend=np.inf) < 0)
+        m["k0"] = {"type": "LUT", "Ea": 0, "scale": 1, "value": {"x": theta[keep][::-1].tolist(), "y": k[keep][::-1].tolist()}}
+        m["alpha"] = {"type": "scalar", "Ea": 0, "scale": 1, "value": 0.5}
+        bv["regions"][e]["kinetics"] = ["BV"]
+    galleries, _ = discharge(spec_from(d, tmp_path, "msmr.json"), t_on=300, t_end=600)
+    butler, _ = discharge(spec_from(bv, tmp_path, "bv.json"), t_on=300, t_end=600)
+    assert butler["termination"] == "final time"
+    np.testing.assert_allclose(butler["Vcell"], galleries["Vcell"], atol=1e-3)
+
+
+@pytest.mark.parametrize("path", [NMC30, MSMR], ids=["standard", "msmr"])
+def test_stretch_of_one_is_plain_baker_verbrugge(path, tmp_path):
+    d = json.loads(path.read_text())
+    for e in ("neg", "pos"):
+        d["regions"][e]["materials"][0]["mD"] = {"type": "scalar", "Ea": 0, "scale": 1, "value": 1.0}
+    plain, _ = discharge(load_spec(path), t_on=300, t_end=600)
+    stretched, _ = discharge(spec_from(d, tmp_path), t_on=300, t_end=600)
+    np.testing.assert_allclose(stretched["Vcell"], plain["Vcell"], atol=1e-5)
+
+
+def test_files_without_kinetics_choose_from_k0(tmp_path):
+    """A file that predates the kinetics list: galleries with a k0 each are MSMR, one k0 is BV."""
+    d = json.loads(MSMR.read_text())
+    for e in ("neg", "pos"):
+        d["regions"][e].pop("kinetics", None)
+    model = FOMModel(spec_from(d, tmp_path), 0.5, 298.15, Options(mesh=5))
+    assert [model._kinetics(e, 0) for e in ("neg", "pos")] == ["MSMR", "MSMR"]
+    for k in ("k0", "alpha"):
+        d["regions"]["neg"]["materials"][0][k] = {"type": "scalar", "Ea": 0, "scale": 1, "value": 0.5}
+    assert FOMModel(spec_from(d, tmp_path, "one.json"), 0.5, 298.15, Options(mesh=5))._kinetics("neg", 0) == "BV"
+
+
 # -- charge limits, thermal model and command line -----------------------------
 
 def test_charge_limits_hold_and_soc_stops():
@@ -145,6 +240,65 @@ def test_charge_limits_hold_and_soc_stops():
     assert out["Phise"][:, k1].min() >= 0.08 - 1e-6
     assert out["Vcell"].max() <= 3.9 + 1e-6
     assert np.any(out["Iapp"] > out["Ides"] + 1e-3)          # a limit tapered the current
+
+
+
+@pytest.mark.parametrize("thetae_max", [3.0, 2.2], ids=["plating", "thetae-then-plating"])
+def test_a_limit_engaging_mid_step_holds_and_continues(thetae_max):
+    # cellSKON603 at 2.5C from 10 %: the plating limit engages inside a step,
+    # with the current still at its demand; the run must hold the limit and go on.
+    # At 2.2 the theta_e limit holds first, then hands over to the plating limit
+    # while theta_e sits at its bound: both must keep holding.
+    spec = load_spec(SKON)
+    lim = Limits(phiseMin=0.01, thetaeMin=0.1, thetaeMax=thetae_max, SOCLimit=0.8)
+    out, _ = discharge(spec, rate=-2.5, t_on=1800, t_end=1800, soc0=10,
+                       opts=RunOptions(model=Options(mesh=4, limits=lim)))
+    k1 = np.argmin(np.abs(out["xLocs"]["Phise"] - 1))
+    assert out["termination"] != "failed", out["message"]
+    assert out["time"][-1] > 700
+    assert out["Phise"][:, k1].min() >= 0.01 - 1e-5
+    assert out["Thetae"].max() <= 1.01 * thetae_max      # its controller overshoots briefly as it engages
+
+
+
+def test_chunk_restarts_skip_casadi_initialisation(monkeypatch):
+    # A constant current over 3 chunks: only the first step solves for consistent states.
+    calls = []
+    solve = pybamm.CasadiAlgebraicSolver._integrate
+    monkeypatch.setattr(pybamm.CasadiAlgebraicSolver, "_integrate",
+                        lambda self, *a, **k: calls.append(1) or solve(self, *a, **k))
+    out, _ = discharge(load_spec(NMC30), t_on=2100, t_end=2100)
+    assert out["time"].size > 2 * CHUNK and out["termination"] == "final time"
+    assert len(calls) == 1
+
+
+
+def test_a_thetae_limit_only_cuts_the_current():
+    # A theta_e limit well below the charge's own swing holds for most of it: the
+    # current stays between its demand and zero, never past it and never reversed.
+    lim = Limits(thetaeMax=1.5, SOCLimit=0.8)
+    out, I = discharge(load_spec(SKON), rate=-2.5, t_on=900, t_end=900, soc0=10,
+                       opts=RunOptions(model=Options(mesh=4, limits=lim)))
+    assert out["termination"] != "failed", out["message"]
+    assert np.all(out["Iapp"] >= I - 1e-6) and np.all(out["Iapp"] <= 1e-6)
+    assert np.any(out["Iapp"] > 0.5 * I)                           # it did cut
+
+def test_a_restart_casadi_cannot_initialise_uses_idaklu():
+    class Stub:
+        def __init__(self, err=None):
+            self.err = err
+
+        def step(self, *a, **k):
+            if self.err:
+                raise pybamm.SolverError(self.err)
+            return "idaklu"
+
+    casadi = "Could not find consistent states: rootfinder process failed"
+    assert _step(Stub(casadi), Stub(), object(), False, None, 1.0, {}, None) == "idaklu"
+    with pytest.raises(pybamm.SolverError):                   # the first step has no carried state
+        _step(Stub(casadi), Stub(), None, False, None, 1.0, {}, None)
+    with pytest.raises(pybamm.SolverError):                   # other failures are not retried
+        _step(Stub("Events ['limit Vmax'] are non-positive"), Stub(), object(), False, None, 1.0, {}, None)
 
 
 def with_thermal(d):
