@@ -579,9 +579,12 @@ class FOMModel(pybamm.BaseModel):
         lim = self.options.limits
         self.mode_flags = {}
         self.indicators = {}
+        self.soc_sign = None                     # the SOC limit's side: +1 above the start, -1 below
         if lim.SOCLimit is not None:
             s = np.sign(lim.SOCLimit - self.z0) or 1.0
-            self.events.append(pybamm.Event("SOC limit", s * (lim.SOCLimit - self.SOC)))
+            self.soc_sign = float(s)
+            armed = pybamm.InputParameter("soc on")   # 0: a step that moves SOC away from the limit
+            self.events.append(pybamm.Event("SOC limit", s * (lim.SOCLimit - self.SOC) + BIG * (1 - armed)))
         if not lim.bounds:
             return
         mon = self._monitors()

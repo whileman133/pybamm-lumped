@@ -28,11 +28,15 @@ class SimData:
 
     time and Iapp [A] are a zero-order hold (the last current is unused);
     T [degC] is a scalar or a zero-order hold on time; SOC0 is in percent.
+    step (optional) numbers each sample's experiment step, unique across cycles:
+    the SOC limit then ends the step it is reached in, and the rest of the
+    profile follows at once; without it the SOC limit ends the run.
     """
     time: np.ndarray
     Iapp: np.ndarray
     T: np.ndarray
     SOC0: float
+    step: np.ndarray | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> SimData:
@@ -45,7 +49,12 @@ class SimData:
             raise ValueError("simData.T is a scalar or one value per time sample.")
         if t.size < 2 or np.any(np.diff(t) <= 0):
             raise ValueError("simData.time needs two or more increasing samples.")
-        return cls(t, i, T if T.size > 1 else np.full(t.size, T[0]), float(np.squeeze(d["SOC0"])))
+        step = d.get("step")
+        if step is not None:
+            step = np.atleast_1d(np.asarray(step, float)).ravel()
+            if step.size != t.size:
+                raise ValueError("simData.step needs one value per time sample.")
+        return cls(t, i, T if T.size > 1 else np.full(t.size, T[0]), float(np.squeeze(d["SOC0"])), step)
 
 
 @dataclass
@@ -77,11 +86,12 @@ CHUNK = 100       # most samples per solver call, so a failure keeps the results
 
 
 def _segments(sd: SimData):
-    """(t_start, t_end, Ides, Tamb [K], sample indices) for runs of equal current and temperature."""
+    """(t_start, t_end, Ides, Tamb [K], sample indices) for runs of equal current, temperature and step."""
     segs, k, n = [], 0, sd.time.size - 1
+    same = (lambda a, b: True) if sd.step is None else (lambda a, b: sd.step[a] == sd.step[b])
     while k < n:
         j = k + 1
-        while j < n and j - k < CHUNK and sd.Iapp[j] == sd.Iapp[k] and sd.T[j] == sd.T[k]:
+        while j < n and j - k < CHUNK and sd.Iapp[j] == sd.Iapp[k] and sd.T[j] == sd.T[k] and same(j, k):
             j += 1
         segs.append((sd.time[k], sd.time[j], sd.Iapp[k], sd.T[k] + 273.15, np.arange(k, j)))
         k = j
@@ -97,7 +107,7 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
     spec : CellSpec
         Compiled cell model.
     sim : SimData or dict
-        Input profile (time [s], Iapp [A], T [degC], SOC0 [%]).
+        Input profile (time [s], Iapp [A], T [degC], SOC0 [%], optional step).
     opts : RunOptions
         Solver, mesh, thermal and charge-limit options.
 
@@ -107,6 +117,12 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
         FOMout fields: time, Iapp, Ides, Vcell, T, SOC, negSOC, posSOC, Phise,
         Phie, Thetae, Ifdl, negIf, posIf, neg/pos per-material fields, xLocs,
         Tcell (thermal) and status fields (termination, message, wallTime).
+
+    Notes
+    -----
+    With step numbers, the SOC limit ends the step it is reached in: the next
+    step starts at once, so the output runs shorter than the profile. The limit
+    is armed only while the demand moves SOC toward it.
     """
     sd = sim if isinstance(sim, SimData) else SimData.from_dict(sim)
     opts = opts or RunOptions()
@@ -133,13 +149,31 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
     termination, message = "final time", ""
     stop = False
     prev_Ides = prev_Iapp = 0.0
+    offset = 0.0                        # profile time less model time: what ended steps skipped
+    resume = None                       # the profile time the run resumes at after the SOC limit
+    soc_side = model.soc_sign
     for (ta, tb, Ides, Tamb, idx) in _segments(sd):
-        tq = sd.time[idx]
+        if resume is not None:
+            if ta < resume - 1e-9:
+                continue                                     # the rest of the ended step
+            resume = None
+        tq = sd.time[idx] - offset                           # model time from here on
+        t_end = sd.time[-1] - offset
+        ta, tb = ta - offset, tb - offset
         t = ta
         if mode is not None and (np.sign(Ides) != np.sign(prev_Ides) or Ides > prev_Iapp):
             mode = None                                      # the new demand no longer pushes the limit
+        armed = soc_side is not None and soc_side * -Ides > 0     # charge (Ides < 0) raises SOC
+        if armed and sd.step is not None and rows.get("SOC") and soc_side * (lim_soc(model) - rows["SOC"][-1]) <= 1e-9:
+            resume, offset, stop = _next_step(sd, idx, ta, offset)   # already at the limit: the step ends now
+            if stop:
+                termination = "SOC limit"
+                break
+            continue
         while t < tb - 1e-12:
             inputs = {"Ides [A]": Ides, "Tamb [K]": Tamb}
+            if soc_side is not None:
+                inputs["soc on"] = float(armed)
             inputs.update({f"mode {n}": float(n == mode) for n in modes})
             inputs.update(limit_slacks(model, state, inputs, modes))
             ts_want = np.minimum(tq[tq + TSHIFT > t + 1e-12] + TSHIFT, tb)
@@ -152,15 +186,15 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
                 message = f"PyBaMM stopped between t = {t:.6g} s and {tb:.6g} s: {err}"
                 break
             ts = sol.t
-            want = np.concatenate([np.minimum(tq + TSHIFT, tb), [sd.time[-1]] if tb == sd.time[-1] else []])
+            want = np.concatenate([np.minimum(tq + TSHIFT, tb), [t_end] if tb == t_end else []])
             keep = np.isin(np.round(ts, 9), np.round(want, 9))
             keep &= ts > (times[-1] + TSHIFT + 1e-9 if times else -np.inf)
             for k, v in outvars.items():
                 vals = sol[k].entries
                 vals = vals.T if vals.ndim == 2 else vals
                 rows[k].extend(np.atleast_2d(vals[keep]) if vals.ndim == 2 else vals[keep])
-            times.extend(np.where(ts[keep] >= sd.time[-1] - 1e-12, ts[keep], ts[keep] - TSHIFT))
-            progress(ts[-1])
+            times.extend(np.where(ts[keep] >= t_end - 1e-12, ts[keep], ts[keep] - TSHIFT))
+            progress(ts[-1] + offset)
             t = ts[-1]
             state = _carrier(sol, model, inputs)
             term = sol.termination or ""
@@ -168,8 +202,13 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
             if term.startswith("event:"):
                 name = term.split("event:", 1)[1].strip()
                 if name == "SOC limit":
-                    termination, stop = "SOC limit", True
                     _append_final(sol, outvars, rows, times)
+                    if sd.step is None:
+                        termination, stop = "SOC limit", True
+                    else:                                    # the step ends; the next starts now
+                        resume, offset, stop = _next_step(sd, idx, t, offset)
+                        if stop:
+                            termination = "SOC limit"
                     break
                 if name.startswith("limit release"):
                     mode = None
@@ -188,6 +227,31 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
     out.update(termination=termination, message=message, wallTime=_time.perf_counter() - wall,
                engine=f"pybamm {pybamm.__version__}, pybamm-lumped {version('pybamm-lumped')}")
     return out
+
+
+def lim_soc(model):
+    """The SOC limit (a fraction)."""
+    return model.options.limits.SOCLimit
+
+
+def _next_step(sd, idx, t, offset):
+    """
+    Where the run resumes when the SOC limit ends the step of samples idx at model time t.
+
+    Returns
+    -------
+    resume : float or None
+        Profile time of the next step's first sample.
+    offset : float
+        Profile time less model time from then on.
+    stop : bool
+        True when no step follows (the run ends at the limit).
+    """
+    later = np.flatnonzero((np.arange(sd.time.size - 1) >= idx[0]) & (sd.step[:-1] != sd.step[idx[0]]))
+    if later.size == 0:
+        return None, offset, True
+    resume = float(sd.time[later[0]])
+    return resume, resume - t, False
 
 
 def _step(solver, carry, state, unchanged, model, dt, inputs, t_interp):

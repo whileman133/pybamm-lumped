@@ -243,6 +243,21 @@ def test_charge_limits_hold_and_soc_stops():
 
 
 
+def test_soc_limit_ends_the_step_and_the_next_follows():
+    # With step numbers, the SOC limit ends the charge step; the rest step runs at once.
+    spec = load_spec(NMC30)
+    I = -2.0 * capacity(spec, "neg")
+    t = np.arange(0.0, 4300 + 1, 10.0)
+    step = np.where(t < 4000, 1, 2)
+    sim = {"time": t, "Iapp": np.where(step == 1, I, 0.0), "T": 25.0, "SOC0": 20, "step": step}
+    out = simulate(spec, sim, RunOptions(model=Options(mesh=4, limits=Limits(SOCLimit=0.7))))
+    hit = np.flatnonzero(out["SOC"] >= 0.7 - 1e-6)[0]
+    assert out["termination"] == "final time"
+    assert out["SOC"].max() == pytest.approx(0.7, abs=1e-4)     # the double layer settles into the rest
+    assert out["time"][-1] == pytest.approx(out["time"][hit] + 300, abs=1)   # the rest follows at once
+    assert np.all(np.abs(out["Iapp"][out["time"] > out["time"][hit] + 1]) < 1e-6)
+
+
 @pytest.mark.parametrize("thetae_max", [3.0, 2.2], ids=["plating", "thetae-then-plating"])
 def test_a_limit_engaging_mid_step_holds_and_continues(thetae_max):
     # cellSKON603 at 2.5C from 10 %: the plating limit engages inside a step,
