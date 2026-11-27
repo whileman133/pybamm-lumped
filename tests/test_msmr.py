@@ -9,6 +9,7 @@ import pytest
 
 import lumped
 from lumped.cellparams.model import Parameter
+from lumped.base import msmr_exchange_current
 from lumped.libparams import _msmr_params, get_lib_param_values, msmr_ocp, msmr_thetas
 
 DATA = Path(__file__).parent / "data"
@@ -110,3 +111,21 @@ def test_msmr_cell_eis(msmr_cell):
     Z = np.array(lumped.sim_eis(msmr_cell, freq, 50).solution)
     assert np.all(np.isfinite(Z))
     assert np.all(Z.real > 0) and np.all(Z.imag < 0)
+
+
+def test_msmr_exchange_current_is_exact_in_empty_galleries():
+    """i0 equals k0 x^(w a) (X - x)^(w (1-a)) where a sharp gallery holds x < 1e-50, and stays finite past e^z overflow."""
+    f = F / (R * 298.15)
+    k0, X, w, a, U0 = 1000.0, 0.3, 0.04, 0.4, 0.09
+    U = np.array([-0.2, 0.0, 0.09, 0.12, 0.2, 0.3])
+    z = f * (U - U0) / w
+    logx = np.log(X) - np.log1p(np.exp(z))
+    ref = k0 * np.exp(w * (a * logx + (1 - a) * (logx + z)))
+    Us = pybamm.StateVector(slice(0, U.size))
+    got = msmr_exchange_current(k0, X, w, a, Us, U0, f).evaluate(y=U)[:, 0]
+    assert logx.min() < np.log(1e-50)
+    np.testing.assert_allclose(got, ref, rtol=1e-12)
+    far = np.array([-5.0, 5.0])                           # |z| > 1e3: e^z overflows in the direct form
+    i0 = msmr_exchange_current(k0, X, w, a, pybamm.StateVector(slice(0, 2)), U0, f)
+    jac = i0.jac(pybamm.StateVector(slice(0, 2))).evaluate(y=far)
+    assert np.all(np.isfinite(i0.evaluate(y=far))) and np.all(np.isfinite(jac.toarray()))

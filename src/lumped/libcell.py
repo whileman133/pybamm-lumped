@@ -12,7 +12,7 @@ from importlib.resources import files
 import numpy as np
 import pybamm
 
-from .base import BaseLumpedModel
+from .base import BaseLumpedModel, msmr_exchange_current
 
 ELECTRODES = ("neg", "pos")
 
@@ -29,9 +29,9 @@ class LumpedLIBModel(BaseLumpedModel):
         stoichiometry-dependent Ds (neg_J/pos_J=J). The solid-diffusion equation
         is solved for the particle potential Us instead of thetas.
 
-    MSMR exchange current follows the BMS3 toolbox (genFOM) convention:
-        i0_j = k0_j * xss_j^omega_j * exp((1-alpha_j)*f*(Uss-U0_j)) * thetae^(1-alpha_j)
-    (LumpedLMBModel uses the same unscaled k0_j.)
+    MSMR exchange current follows the BMS3 toolbox convention (unscaled k0_j):
+        i0_j = k0_j * xss_j^(omega_j*alpha_j) * (X_j - xss_j)^(omega_j*(1-alpha_j)) * thetae^(1-alpha_j)
+    evaluated from Uss by msmr_exchange_current. (LumpedLMBModel uses the same k0_j.)
 
     NOTE 1: For simplicity, we set the potential reference point to the electrolyte at the surface
             of the Li-metal electrode, i.e., we define phi_e(0) = 0V. This makes phi_s_neg(0) nonzero,
@@ -555,9 +555,7 @@ class LumpedLIBModel(BaseLumpedModel):
             self._set_v(e, "if", i0 * (pybamm.exp((1 - alpha) * f * etas) - pybamm.exp(-alpha * f * etas)))
             return
 
-        # MSMR: sum of per-gallery Butler-Volmer currents. The standard-form exchange current
-        #     k0_j * xss_j^(omega_j*alpha_j) * (X_j - xss_j)^(omega_j*(1-alpha_j)) * thetae^(1-alpha_j)
-        # is singular as xss_j -> X_j; substituting xss_j = X_j/(1+g_j) gives the potential form below.
+        # MSMR: sum of per-gallery Butler-Volmer currents, i0_j from Uss (no singular gallery end).
         Uss = self._v(e, "Uss")
         i0j, ifj = [], []
         for j in range(self.J[e]):
@@ -565,12 +563,8 @@ class LumpedLIBModel(BaseLumpedModel):
             omega_j = self._p(e, "omega")[j]
             k0_j = self._p(e, "k0")[j]
             alpha_j = self._p(e, "alpha")[j]
-            i0j.append(
-                k0_j *
-                self._v(e, "xss")[j] ** omega_j *
-                pybamm.exp((1 - alpha_j) * f * (Uss - U0_j)) *
-                thetae ** (1 - alpha_j)
-            )
+            X_j = self._p(e, "X")[j]
+            i0j.append(msmr_exchange_current(k0_j, X_j, omega_j, alpha_j, Uss, U0_j, f) * thetae ** (1 - alpha_j))
             ifj.append(i0j[j] * (pybamm.exp((1 - alpha_j) * f * etas) - pybamm.exp(-alpha_j * f * etas)))
         self._set_v(e, "i0j", i0j)
         self._set_v(e, "ifj", ifj)

@@ -136,6 +136,15 @@ def test_charge_is_conserved(make, nmc30, tmp_path):
     assert np.all(np.isfinite(out["Vcell"]))
 
 
+def test_a_vanishing_series_dl_resistance_still_solves(nmc30, tmp_path):
+    d = copy.deepcopy(nmc30)
+    d["regions"]["neg"]["materials"][0]["Rdl"]["value"] = 1e-11
+    out, _ = discharge(spec_from(d, tmp_path), rate=-2.0, t_on=60.0, t_end=60.0, soc0=50)
+    assert out["termination"] == "final time"
+    ref, _ = discharge(load_spec(NMC30), rate=-2.0, t_on=60.0, t_end=60.0, soc0=50)
+    assert out["Vcell"][-1] == pytest.approx(ref["Vcell"][-1], abs=1e-3)
+
+
 def test_blend_of_identical_halves_is_the_single_material(nmc30, tmp_path):
     one, _ = discharge(load_spec(NMC30))
     two, _ = discharge(spec_from(blend_of_halves(nmc30), tmp_path))

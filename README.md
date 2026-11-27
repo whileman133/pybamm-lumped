@@ -113,8 +113,11 @@ For an MSMR electrode, the model:
 
 - solves solid diffusion for the particle potential `Us` (Baker–Verbrugge diffusivity,
   `Ds = Dsref·f·θ(1−θ)·(−dU/dθ)`), with `θ = Σ X_j / (1 + exp(f(U − U0_j)/ω_j))`;
-- sums per-gallery Butler–Volmer currents with the BMS3-toolbox (`genFOM`) exchange current
-  `i0_j = k0_j · xss_j^ω_j · exp((1−α_j) f (Uss − U0_j)) · θe^(1−α_j)`;
+- sums per-gallery Butler–Volmer currents with the BMS3-toolbox exchange current
+  `i0_j = k0_j · xss_j^(ω_j α_j) · (X_j − xss_j)^(ω_j (1−α_j)) · θe^(1−α_j)`, evaluated from the
+  surface potential as `k0_j X_j^ω_j (e^(α_j z) + e^(−(1−α_j) z))^(−ω_j) θe^(1−α_j)`,
+  `z = f (Uss − U0_j)/ω_j` (`lumped.base.msmr_exchange_current`): exact at any filling, with no
+  floor on `xss_j` and no singular gallery end;
 - takes parameters `{e}_U0_j [V]`, `{e}_X_j`, `{e}_omega_j`, `{e}_k0_j [A]`, `{e}_alpha_j`, `{e}_Dsref [s-1]`
   (in place of `{e}_Ds`, `{e}_k0`, `{e}_alpha`, `{e}_Uss`, `{e}_thetas0`), and adds output `{e}_Us [V]`.
 
@@ -178,7 +181,7 @@ What the model covers:
   Butler–Volmer (one k0, which may vary with the surface stoichiometry, and one α),
   as the file's `kinetics` list for each electrode says; a file without it uses
   MSMR for galleries with a k0 each and Butler–Volmer otherwise. The series Rdl–Cdl double layer
-  behind Rf, and the flux form of electrolyte transport when the cell gives
+  behind Rf (a nonzero Rdl below 1 µΩ is raised to it, since a vanishing series resistance makes the initial-state solve singular; Rdl = 0 drops it exactly), and the flux form of electrolyte transport when the cell gives
   `t0mNorm`. The electrolyte current's diffusion term is κ̄D·`t0mNorm`, since the
   toolbox lumps κ̄D at the reference transference number.
 - The lumped thermal model (`addThermalModel.m`) and the charge limits

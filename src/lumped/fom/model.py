@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pybamm
 
+from ..base import msmr_exchange_current
 from .spec import CellSpec, Param, SpecError
 
 # Mesh presets: elements per region and per particle radius (coarsening 1-5).
@@ -28,6 +29,7 @@ RELEASE_MARGIN = 1e-6   # release event margin, per ampere of demand (plus 1 A)
 CLAMP_SHARPNESS = 50.0  # the theta_e limit's current cut: smooth clamp to [0, 1] [1/cut]
 CLAMP_OFFSET = 5 / CLAMP_SHARPNESS   # the clamp's shift, so a zero cut leaves the current at its demand
 LIMIT_SLACK = 1e-6      # how far past its start an inactive limit engages [V, or theta_e]
+RDL_MIN = 1e-6          # smallest nonzero series double-layer resistance [Ohm]
 
 
 @dataclass
@@ -330,11 +332,10 @@ class FOMModel(pybamm.BaseModel):
             else:
                 i_f = 0
                 for j in range(J):
-                    g, xss = gallery(Uss, j, f, T)
                     a = self._p(e, "alpha", i).expr(0.5, T, j)
                     k0 = self._p(e, "k0", i).expr(0.5, T, j)
-                    i0 = k0 * _nice_pow(xss, wp.expr(0.5, T, j)) \
-                        * pybamm.exp((1 - a) * (Uss - U0p.expr(0.5, T, j)) * f) * _nice_pow(thetae, 1 - a)
+                    i0 = msmr_exchange_current(k0, Xp.expr(0.5, T, j), wp.expr(0.5, T, j), a, Uss,
+                                               U0p.expr(0.5, T, j), f) * _nice_pow(thetae, 1 - a)
                     i_f = i_f + i0 * (pybamm.exp((1 - a) * f * eta) - pybamm.exp(-a * f * eta))
             # Flux in U: Ds*dtheta/dU*grad(U).
             # - Baker-Verbrugge: Ds = Dsref*(f*theta*(1-theta)*(-dU/dtheta))^mD (mD = 1: plain).
@@ -393,6 +394,10 @@ class FOMModel(pybamm.BaseModel):
 
         idl + Rdl*Cdl*d(idl)/dt = Cdl*d(Vint)/dt with Vint = phise - Rf*ifdl; the
         capacitor voltage vdl is the state. Returns idl.
+
+        A nonzero Rdl below RDL_MIN is raised to it: a vanishing series resistance
+        leaves the initial-state solve singular. Rdl = 0 drops the branch's
+        resistance exactly.
         """
         zero = lambda p: p.type == "scalar" and float(p.value) == 0  # noqa: E731
         if zero(Cdl_p):
@@ -404,7 +409,7 @@ class FOMModel(pybamm.BaseModel):
             self.rhs[vdl] = (ifdl - i_f) / Cdl
             self.algebraic[ifdl] = Vint - vdl
             return ifdl - i_f
-        idl = (Vint - vdl) / Rdl
+        idl = (Vint - vdl) / pybamm.maximum(Rdl, RDL_MIN)
         self.rhs[vdl] = idl / Cdl
         self.algebraic[ifdl] = i_f + idl - ifdl
         return idl

@@ -8,7 +8,7 @@ PyBaMM partial-differential-equation (PDE) model for LMB cell.
 
 import numpy as np
 import pybamm
-from .base import BaseLumpedModel
+from .base import BaseLumpedModel, msmr_exchange_current
 
 
 class LumpedLMBModel(BaseLumpedModel):
@@ -27,8 +27,9 @@ class LumpedLMBModel(BaseLumpedModel):
     NOTE 3: You must specify the number of MSMR galleries/reactions for the positive electrode
             when constructing the model.
 
-    NOTE 4: MSMR k0_j is unscaled, matching LumpedLIBModel and the BMS3 toolbox (genFOM):
-                i0_j = k0_j * xss_j^omega_j * exp((1-beta_j)*f*(Uss-U0_j)) * thetae^(1-beta_j)
+    NOTE 4: MSMR k0_j is unscaled, matching LumpedLIBModel and the BMS3 toolbox:
+                i0_j = k0_j * xss_j^(omega_j*beta_j) * (X_j - xss_j)^(omega_j*(1-beta_j)) * thetae^(1-beta_j)
+            evaluated from Uss by msmr_exchange_current.
             To convert a k0 scaled by (X_j/2)^omega_j (e.g., thesis values):
                 k0_j = k0_j_scaled / (X_j/2)**omega_j
     """
@@ -329,21 +330,9 @@ class LumpedLMBModel(BaseLumpedModel):
             k0_j = self.param.pos_k0[j]
             beta_j = self.param.pos_beta[j]
 
-            # Compute exchange current for gallery j.
-            # Standard-form exchange current expression:
-            # pos_i0.append(
-            #     k0_j *
-            #     pos_xss[j]**(omega_j*beta_j) *
-            #     (X_j - pos_xss[j])**(omega_j*(1-beta_j)) *
-            #     theta_e_pos**(1 - beta_j)
-            # )
-            # To avoid the singularity when xj->Xj, we reformulate in terms
-            # of the potential. (To derive this equation, substitute xj=Xj/(1+gj) into
-            # the original exchange-current expression.)
+            # Exchange current for gallery j, from the surface potential (no singular gallery end).
             self.var.pos_i0j.append(
-                k0_j *
-                self.var.pos_xss[j] ** omega_j *
-                pybamm.exp((1 - beta_j) * (self.var.pos_Uss - U0_j) * self.var.f) *
+                msmr_exchange_current(k0_j, X_j, omega_j, beta_j, self.var.pos_Uss, U0_j, self.var.f) *
                 self.var.pos_thetae ** (1 - beta_j)
             )
 
