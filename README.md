@@ -162,6 +162,11 @@ many elements because a diffusivity that changes by orders of magnitude over a n
 O'Regan's graphite gives a voltage ripple of 0.52 mV at 50 particle elements, 0.029 mV at 200
 and 0.012 mV at 400.
 
+`T` is a scalar or one value per sample, held over the sample. A run of three or more
+samples whose `T` changes at one rate is solved as a ramp through the samples' midpoints,
+in one segment rather than one per sample: its mean over each sample is that sample's
+value, so a reduced model that holds each sample sees the same ambient on average.
+
 From a shell, `python -m lumped.fom --model cell.json --input sim.json --out out.mat`
 writes FOMout to a MATLAB file (`--options` and `--progress` are optional).
 

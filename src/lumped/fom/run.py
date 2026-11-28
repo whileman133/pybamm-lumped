@@ -27,7 +27,9 @@ class SimData:
     Input profile, as simFOM's simData.
 
     time and Iapp [A] are a zero-order hold (the last current is unused);
-    T [degC] is a scalar or a zero-order hold on time; SOC0 is in percent.
+    T [degC] is a scalar or a zero-order hold on time; SOC0 is in percent. A run
+    of RAMP_MIN or more samples whose T changes at one rate is solved as the line
+    through the samples' midpoints, which has the same mean over every sample.
     step (optional) numbers each sample's experiment step, unique across cycles:
     the SOC limit then ends the step it is reached in, and the rest of the
     profile follows at once; without it the SOC limit ends the run.
@@ -83,17 +85,38 @@ class _Progress:
 
 
 CHUNK = 100       # most samples per solver call, so a failure keeps the results so far
+RAMP_MIN = 3      # fewest samples on one line that make a temperature ramp, not steps
 
 
 def _segments(sd: SimData):
-    """(t_start, t_end, Ides, Tamb [K], sample indices) for runs of equal current, temperature and step."""
+    """
+    Split the profile into runs of equal current and step with one ambient line.
+
+    Returns
+    -------
+    segs : list of tuple
+        (t_start, t_end, Ides [A], (Tamb [K], dTamb/dt [K/s]), sample indices), the
+        ambient being Tamb + dTamb/dt * t in profile time.
+
+    Notes
+    -----
+    * A held temperature has dTamb/dt = 0.
+    * A ramp passes through the samples' midpoints, so its mean over each sample
+      is the sample's value; fewer than RAMP_MIN samples on a line stay held.
+    """
     segs, k, n = [], 0, sd.time.size - 1
+    t, T = sd.time, sd.T
     same = (lambda a, b: True) if sd.step is None else (lambda a, b: sd.step[a] == sd.step[b])
     while k < n:
+        rate = (T[k + 1] - T[k]) / (t[k + 1] - t[k]) if k + 1 < n else 0.0
+        on = lambda j: abs(T[j] - T[k] - rate * (t[j] - t[k])) <= 1e-9 * max(1.0, abs(T[k]))  # noqa: E731
         j = k + 1
-        while j < n and j - k < CHUNK and sd.Iapp[j] == sd.Iapp[k] and sd.T[j] == sd.T[k] and same(j, k):
+        while j < n and j - k < CHUNK and sd.Iapp[j] == sd.Iapp[k] and same(j, k) and on(j):
             j += 1
-        segs.append((sd.time[k], sd.time[j], sd.Iapp[k], sd.T[k] + 273.15, np.arange(k, j)))
+        if rate != 0 and j - k < RAMP_MIN:
+            j, rate = k + 1, 0.0                                 # a step in T, held
+        mid = t[k] + (t[k + 1] - t[k]) / 2
+        segs.append((t[k], t[j], sd.Iapp[k], (T[k] + 273.15 - rate * mid, rate), np.arange(k, j)))
         k = j
     return segs
 
@@ -152,7 +175,7 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
     offset = 0.0                        # profile time less model time: what ended steps skipped
     resume = None                       # the profile time the run resumes at after the SOC limit
     soc_side = model.soc_sign
-    for (ta, tb, Ides, Tamb, idx) in _segments(sd):
+    for (ta, tb, Ides, (Tamb, dTdt), idx) in _segments(sd):
         if resume is not None:
             if ta < resume - 1e-9:
                 continue                                     # the rest of the ended step
@@ -171,14 +194,14 @@ def simulate(spec: CellSpec, sim: SimData | dict, opts: RunOptions | None = None
                 break
             continue
         while t < tb - 1e-12:
-            inputs = {"Ides [A]": Ides, "Tamb [K]": Tamb}
+            inputs = {"Ides [A]": Ides, "Tamb [K]": Tamb + dTdt * offset, "dTamb/dt [K/s]": dTdt}   # model time
             if soc_side is not None:
                 inputs["soc on"] = float(armed)
             inputs.update({f"mode {n}": float(n == mode) for n in modes})
             inputs.update(limit_slacks(model, state, inputs, modes))
             ts_want = np.minimum(tq[tq + TSHIFT > t + 1e-12] + TSHIFT, tb)
             t_interp = np.unique(np.concatenate([[0.0], ts_want - t, [tb - t]]))
-            key = (Ides, Tamb, mode)
+            key = (Ides, Tamb + dTdt * offset, dTdt, mode)
             try:
                 sol = _step(solver, carry, state, key == carried, model, tb - t, inputs, t_interp)
             except pybamm.SolverError as err:

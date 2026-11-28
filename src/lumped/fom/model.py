@@ -123,7 +123,8 @@ class FOMModel(pybamm.BaseModel):
 
     Notes
     -----
-    Inputs: 'Ides [A]' (the demanded current), 'Tamb [K]' (ambient), and, with
+    Inputs: 'Ides [A]' (the demanded current), 'Tamb [K]' and 'dTamb/dt [K/s]' (the
+    ambient Tamb + dTamb/dt * t, a ramp within a segment), and, with
     charge limits, one mode flag per limit ('mode <name>', 0 or 1) and how far
     past its bound each engages ('slack <name>').
     """
@@ -139,7 +140,7 @@ class FOMModel(pybamm.BaseModel):
         self.electrodes = ("pos",) if self.half else ("neg", "pos")
         self.F, self.R = spec.F, spec.R
         self.Ides = pybamm.InputParameter("Ides [A]")
-        self.Tamb = pybamm.InputParameter("Tamb [K]")
+        self.Tamb = pybamm.InputParameter("Tamb [K]") + pybamm.InputParameter("dTamb/dt [K/s]") * pybamm.t
         self.out = {}
         self._spatial()
         self._temperature()

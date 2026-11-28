@@ -15,7 +15,7 @@ from lumped.fom import SpecError, load_spec
 from lumped.fom.__main__ import main
 from lumped.fom.expr import ExpressionError, compile_expression
 from lumped.fom.model import FOMModel, Limits, Options
-from lumped.fom.run import CHUNK, RunOptions, _step, simulate
+from lumped.fom.run import CHUNK, RAMP_MIN, RunOptions, SimData, _segments, _step, simulate
 from lumped.fom.spec import Param, check_spec
 
 DATA = Path(__file__).parent / "data"
@@ -283,6 +283,28 @@ def test_a_limit_engaging_mid_step_holds_and_continues(thetae_max):
     assert out["Phise"][:, k1].min() >= 0.01 - 1e-5
     assert out["Thetae"].max() <= 1.01 * thetae_max      # its controller overshoots briefly as it engages
 
+
+
+def test_a_constant_rate_in_t_is_one_ramp_and_a_jump_is_held():
+    t = np.arange(13.0)
+    T = np.r_[np.full(4, 25.0), 30.0, 30.0, 25.0 + 0.5 * (np.arange(7) + 0.5)]   # held, a jump, then a ramp
+    segs = _segments(SimData(t, np.zeros(13), T, 50.0))
+    lines = [(s[4][0], s[4][-1], s[3]) for s in segs]
+    assert lines[0][:2] == (0, 3) and lines[0][2][1] == 0           # held at 25 (the jump does not join)
+    assert lines[1][:2] == (4, 5) and lines[1][2][1] == 0           # 30 held: two samples are no ramp
+    first, last, (Tamb, rate) = lines[-1]
+    assert last - first + 1 >= RAMP_MIN and rate == pytest.approx(0.5)
+    mids = t[first:last + 1] + 0.5
+    np.testing.assert_allclose(Tamb + rate * mids - 273.15, T[first:last + 1])   # the samples' means
+
+
+def test_a_ramped_ambient_follows_the_line_through_the_sample_midpoints(nmc30, tmp_path):
+    spec = spec_from(nmc30, tmp_path)
+    t = np.arange(0.0, 301.0, 10.0)
+    T = 25.0 + 10.0 * (t + 5.0) / 300.0                     # each sample holds the ramp at its midpoint
+    out = simulate(spec, {"time": t, "Iapp": np.full(t.size, 5.0), "T": T, "SOC0": 80}, RunOptions(model=Options(mesh=4)))
+    assert out["termination"] == "final time"
+    np.testing.assert_allclose(out["T"], 25.0 + 10.0 * out["time"] / 300.0, atol=1e-3)   # outputs sit just past each sample
 
 
 def test_chunk_restarts_skip_casadi_initialisation(monkeypatch):
